@@ -29,18 +29,18 @@ public class ItemLimiterListener implements Listener {
 
     private int countItems(Player player, Material material) {
         int count = 0;
-        // Inventory Content
+        // 1. Inventar Inhalt (Main, Hotbar, Offhand, Armor)
         for (ItemStack item : player.getInventory().getContents()) {
             if (item != null && item.getType() == material) {
                 count += item.getAmount();
             }
         }
-        // Cursor
+        // 2. Cursor (Mauszeiger)
         ItemStack cursor = player.getItemOnCursor();
         if (cursor != null && cursor.getType() == material) {
             count += cursor.getAmount();
         }
-        // Crafting Grid (Checks ingredients currently in grid)
+        // 3. Crafting Grid (Nur für aktuellen Check, nicht zum Entfernen)
         Inventory topInv = player.getOpenInventory().getTopInventory();
         if (topInv instanceof CraftingInventory) {
             for (ItemStack item : ((CraftingInventory) topInv).getMatrix()) {
@@ -58,6 +58,7 @@ public class ItemLimiterListener implements Listener {
         player.sendActionBar(Component.text(message, NamedTextColor.RED));
     }
 
+    // --- PICKUP ---
     @EventHandler
     public void onPickup(EntityPickupItemEvent event) {
         if (!(event.getEntity() instanceof Player player)) return;
@@ -78,7 +79,6 @@ public class ItemLimiterListener implements Listener {
             return;
         }
 
-        // Smart Split Logic
         int spaceLeft = limit - currentAmount;
         if (stack.getAmount() > spaceLeft) {
             event.setCancelled(true);
@@ -96,6 +96,7 @@ public class ItemLimiterListener implements Listener {
         }
     }
 
+    // --- CLICK ---
     @EventHandler
     public void onInventoryClick(InventoryClickEvent event) {
         if (!(event.getWhoClicked() instanceof Player player)) return;
@@ -114,30 +115,22 @@ public class ItemLimiterListener implements Listener {
         int currentCount = countItems(player, matToCheck);
 
         Inventory clickedInv = event.getClickedInventory();
-        
-        // --- FIX HERE: RELAXED LOGIC ---
-        // Only block if taking NEW items from a CHEST/CONTAINER (External Inventory).
-        // Moving items inside your own inventory (including Crafting Slots) is ALWAYS allowed,
-        // because onClose will catch any exploits.
-        
         boolean takingFromExternal = (clickedInv != null && clickedInv != player.getInventory());
 
-        if (currentCount >= limit) {
-            if (takingFromExternal) {
-                event.setCancelled(true);
-                sendFeedback(player, "Limit reached!");
-            }
-            // We REMOVED the Shift-Click block for internal inventory!
-            // This allows you to Shift-Click items into the Crafting Table.
+        // Nur blockieren, wenn man neue Items aus einer Kiste holt.
+        // Bewegen im Inventar ist erlaubt (wird beim Schließen geprüft).
+        if (currentCount >= limit && takingFromExternal) {
+            event.setCancelled(true);
+            sendFeedback(player, "Limit reached!");
         }
     }
 
     @EventHandler
     public void onInventoryDrag(InventoryDragEvent event) {
-        // Dragging is usually fine because the item is already on the cursor (so it's already counted).
-        // No strict check needed here anymore, onClose catches dupes.
+        // Dragging ist erlaubt, Überschuss wird beim Schließen entfernt.
     }
 
+    // --- CRAFTING ---
     @EventHandler
     public void onCraft(CraftItemEvent event) {
         if (!(event.getWhoClicked() instanceof Player player)) return;
@@ -150,9 +143,6 @@ public class ItemLimiterListener implements Listener {
             int limit = plugin.getLimits().get(mat);
             int currentCount = countItems(player, mat);
             
-            // Allow crafting if the RESULT does not push you over the limit.
-            // Ingredients are consumed, but usually we check against the total AFTER crafting.
-            // Since result is added: Current + Result > Limit = Block.
             if (currentCount + result.getAmount() > limit) {
                 event.setCancelled(true);
                 sendFeedback(player, "Limit reached via Crafting!");
@@ -160,47 +150,62 @@ public class ItemLimiterListener implements Listener {
         }
     }
 
+    // --- DER NEUE "BOUNCER" (ON CLOSE) ---
     @EventHandler
     public void onClose(InventoryCloseEvent event) {
         if (!(event.getPlayer() instanceof Player player)) return;
         if (!plugin.isWorldEnabled(player.getWorld().getName())) return;
 
-        // "The Bouncer" - Checks everything when you leave the inventory.
+        // Wir prüfen JEDES limitierte Material
         for (Material mat : plugin.getLimits().keySet()) {
             int limit = plugin.getLimits().get(mat);
-            int currentCount = 0;
             
+            // 1. Alles zählen (Inv + Cursor)
+            int totalCount = 0;
+            
+            // Inventar scannen
             for (ItemStack item : player.getInventory().getContents()) {
-                if (item != null && item.getType() == mat) currentCount += item.getAmount();
+                if (item != null && item.getType() == mat) {
+                    totalCount += item.getAmount();
+                }
             }
+            
+            // Cursor scannen
             ItemStack cursor = player.getItemOnCursor();
-            if (cursor != null && cursor.getType() == mat) currentCount += cursor.getAmount();
+            if (cursor != null && cursor.getType() == mat) {
+                totalCount += cursor.getAmount();
+            }
 
-            if (currentCount > limit) {
-                int toRemove = currentCount - limit;
-                ItemStack remainingToRemove = new ItemStack(mat, toRemove);
-                HashMap<Integer, ItemStack> notRemoved = player.getInventory().removeItem(remainingToRemove);
+            // 2. Wenn zu viel -> Droppen
+            if (totalCount > limit) {
+                int amountToRemove = totalCount - limit; // Das ist der Überschuss
+
+                // Erstmal das Item droppen
+                ItemStack dropStack = new ItemStack(mat, amountToRemove);
+                player.getWorld().dropItem(player.getLocation(), dropStack);
                 
-                if (!notRemoved.isEmpty()) {
-                    if (cursor != null && cursor.getType() == mat) {
-                        int amountOnCursor = cursor.getAmount();
-                        if (amountOnCursor <= toRemove) {
-                            player.setItemOnCursor(null);
-                            toRemove -= amountOnCursor;
-                        } else {
-                            cursor.setAmount(amountOnCursor - toRemove);
-                            toRemove = 0;
-                        }
+                // JETZT VOM SPIELER LÖSCHEN (Cursor Priorität!)
+                
+                // Schritt A: Vom Cursor abziehen
+                if (cursor != null && cursor.getType() == mat) {
+                    if (cursor.getAmount() <= amountToRemove) {
+                        // Der ganze Cursor ist Überschuss -> weg damit
+                        amountToRemove -= cursor.getAmount();
+                        player.setItemOnCursor(null); 
+                    } else {
+                        // Cursor ist größer als Überschuss -> verkleinern
+                        cursor.setAmount(cursor.getAmount() - amountToRemove);
+                        amountToRemove = 0; // Alles erledigt
                     }
                 }
 
-                int droppedAmount = (currentCount - limit) - (notRemoved.isEmpty() ? 0 : notRemoved.get(0).getAmount());
-                if (droppedAmount > 0) {
-                    ItemStack drop = new ItemStack(mat, droppedAmount);
-                    player.getWorld().dropItem(player.getLocation(), drop);
-                    player.sendMessage(Component.text("Excess items were dropped!", NamedTextColor.RED));
-                    player.playSound(player.getLocation(), Sound.ENTITY_ITEM_BREAK, 1f, 1f);
+                // Schritt B: Wenn noch was übrig ist -> Aus dem Inventar abziehen
+                if (amountToRemove > 0) {
+                    player.getInventory().removeItem(new ItemStack(mat, amountToRemove));
                 }
+
+                player.sendMessage(Component.text("Excess items were dropped!", NamedTextColor.RED));
+                player.playSound(player.getLocation(), Sound.ENTITY_ITEM_BREAK, 1f, 1f);
             }
         }
     }
