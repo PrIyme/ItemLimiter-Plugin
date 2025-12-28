@@ -1,0 +1,13 @@
+# ItemLimiter Config
+# Limits are saved here.
+
+# Format: MATERIAL: AMOUNT
+limits:
+  TOTEM_OF_UNDYING: 1
+  ENCHANTED_GOLDEN_APPLE: 6
+
+# List of worlds where limits are active.
+# Leave empty [] to activate everywhere.
+enabled-worlds: []
+#  - "world"
+#  - "farmworld"

@@ -1,0 +1,8 @@
+name: ItemLimiter
+version: 1.0
+main: de.priyme.itemlimiter.ItemLimiter
+api-version: 1.21
+commands:
+  limit:
+    description: Opens the limit management menu
+    permission: itemlimiter.admin
