@@ -1,5 +1,5 @@
+de/priyme/itemlimiter/ItemLimiterListener.class
+de/priyme/itemlimiter/LimitCommand.class
 de/priyme/itemlimiter/manager/LimitManager.class
 de/priyme/itemlimiter/ItemLimiter.class
-de/priyme/itemlimiter/listener/LimitListener.class
-de/priyme/itemlimiter/commands/LimitCommand.class
 de/priyme/itemlimiter/gui/LimitGUI.class

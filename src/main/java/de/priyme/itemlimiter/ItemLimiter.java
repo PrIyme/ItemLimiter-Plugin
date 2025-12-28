@@ -1,35 +1,67 @@
 package de.priyme.itemlimiter;
 
-import de.priyme.itemlimiter.commands.LimitCommand;
-import de.priyme.itemlimiter.listener.LimitListener;
-import de.priyme.itemlimiter.manager.LimitManager;
+import org.bukkit.Material;
+import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.plugin.java.JavaPlugin;
+
+import java.util.HashMap;
+import java.util.List;
 
 public final class ItemLimiter extends JavaPlugin {
 
-    private LimitManager limitManager;
+    private final HashMap<Material, Integer> limits = new HashMap<>();
+    private List<String> enabledWorlds;
 
     @Override
     public void onEnable() {
-        // Config erstellen falls nicht vorhanden
+        // Config laden
         saveDefaultConfig();
+        loadConfigValues();
 
-        // Manager initialisieren
-        this.limitManager = new LimitManager(this);
-
-        // Events registrieren
-        getServer().getPluginManager().registerEvents(new LimitListener(limitManager), this);
-
-        // Commands registrieren
-        getCommand("limit").setExecutor(new LimitCommand(limitManager));
+        // Listener registrieren
+        getServer().getPluginManager().registerEvents(new ItemLimiterListener(this), this);
         
-        getLogger().info("ItemLimiter von Priyme aktiviert!");
+        // Command & GUI Listener registrieren (DAS IST NEU)
+        LimitCommand cmd = new LimitCommand(this);
+        getCommand("limit").setExecutor(cmd);
+        getServer().getPluginManager().registerEvents(cmd, this);
+        
+        getLogger().info("ItemLimiter geladen!");
     }
 
     @Override
     public void onDisable() {
-        if (limitManager != null) {
-            limitManager.saveLimits();
+        getLogger().info("ItemLimiter deaktiviert.");
+    }
+
+    public void loadConfigValues() {
+        reloadConfig();
+        FileConfiguration config = getConfig();
+        limits.clear();
+
+        enabledWorlds = config.getStringList("enabled-worlds");
+
+        if (config.isConfigurationSection("limits")) {
+            for (String key : config.getConfigurationSection("limits").getKeys(false)) {
+                try {
+                    Material mat = Material.valueOf(key.toUpperCase());
+                    int amount = config.getInt("limits." + key);
+                    limits.put(mat, amount);
+                } catch (IllegalArgumentException e) {
+                    getLogger().warning("Falsches Material in Config: " + key);
+                }
+            }
         }
+    }
+
+    public HashMap<Material, Integer> getLimits() {
+        return limits;
+    }
+
+    public boolean isWorldEnabled(String worldName) {
+        if (enabledWorlds == null || enabledWorlds.isEmpty()) {
+            return true; 
+        }
+        return enabledWorlds.contains(worldName);
     }
 }

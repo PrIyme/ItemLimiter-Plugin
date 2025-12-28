@@ -1,5 +1,5 @@
 /home/prime/Dokumente/Itemlimiter/src/main/java/de/priyme/itemlimiter/ItemLimiter.java
 /home/prime/Dokumente/Itemlimiter/src/main/java/de/priyme/itemlimiter/commands/LimitCommand.java
 /home/prime/Dokumente/Itemlimiter/src/main/java/de/priyme/itemlimiter/gui/LimitGUI.java
-/home/prime/Dokumente/Itemlimiter/src/main/java/de/priyme/itemlimiter/listener/LimitListener.java
+/home/prime/Dokumente/Itemlimiter/src/main/java/de/priyme/itemlimiter/listener/ItemLimiterListener.java
 /home/prime/Dokumente/Itemlimiter/src/main/java/de/priyme/itemlimiter/manager/LimitManager.java
