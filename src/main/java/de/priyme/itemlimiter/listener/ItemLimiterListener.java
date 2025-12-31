@@ -13,6 +13,7 @@ import org.bukkit.event.inventory.CraftItemEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
+import org.bukkit.event.inventory.InventoryType;
 import org.bukkit.inventory.CraftingInventory;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
@@ -27,28 +28,36 @@ public class ItemLimiterListener implements Listener {
         this.plugin = plugin;
     }
 
+    /**
+     * Zählt Items im Inventar, im Cursor UND im Crafting-Grid.
+     */
     private int countItems(Player player, Material material) {
         int count = 0;
+
         // 1. Inventar Inhalt (Main, Hotbar, Offhand, Armor)
         for (ItemStack item : player.getInventory().getContents()) {
             if (item != null && item.getType() == material) {
                 count += item.getAmount();
             }
         }
+
         // 2. Cursor (Mauszeiger)
         ItemStack cursor = player.getItemOnCursor();
         if (cursor != null && cursor.getType() == material) {
             count += cursor.getAmount();
         }
-        // 3. Crafting Grid (Nur für aktuellen Check, nicht zum Entfernen)
+
+        // 3. Crafting Grid (NEU: Damit wird Crafting als "Besitz" gezählt)
         Inventory topInv = player.getOpenInventory().getTopInventory();
-        if (topInv instanceof CraftingInventory) {
-            for (ItemStack item : ((CraftingInventory) topInv).getMatrix()) {
+        if (topInv instanceof CraftingInventory crafting) {
+            // getMatrix() ignoriert den Output-Slot, wir zählen nur Inputs
+            for (ItemStack item : crafting.getMatrix()) {
                 if (item != null && item.getType() == material) {
                     count += item.getAmount();
                 }
             }
         }
+
         return count;
     }
 
@@ -96,18 +105,45 @@ public class ItemLimiterListener implements Listener {
         }
     }
 
-    // --- CLICK ---
+    // --- CLICK (Hier ist der wichtigste Fix) ---
     @EventHandler
     public void onInventoryClick(InventoryClickEvent event) {
         if (!(event.getWhoClicked() instanceof Player player)) return;
         if (!plugin.isWorldEnabled(player.getWorld().getName())) return;
 
-        ItemStack current = event.getCurrentItem();
+        // TEIL 1: Verhinderung des "Parkens" im Crafting-Grid
+        // Wenn man in ein Crafting-Inventar klickt UND einen limitierten Gegenstand platziert
+        if (event.getClickedInventory() instanceof CraftingInventory && event.getSlotType() == InventoryType.SlotType.CRAFTING) {
+            ItemStack cursor = event.getCursor();
+            
+            // Prüfen, ob Cursor limitiert ist
+            if (cursor != null && plugin.getLimits().containsKey(cursor.getType())) {
+                Material mat = cursor.getType();
+                int limit = plugin.getLimits().get(mat);
+                int current = countItems(player, mat); // Zählt jetzt Crafting mit!
+                
+                // Da countItems den Cursor bereits mitzählt, müssen wir prüfen:
+                // Würde das Platzieren (was countItems schon inkludiert hat im Cursor) das Limit sprengen?
+                // Logik: countItems = (Inv + Crafting + Cursor). 
+                // Wenn countItems > limit, ist der Spieler bereits drüber oder am Limit.
+                
+                // Wir wollen verhindern, dass er Items im Crafting Grid "versteckt".
+                // Da countItems das Grid jetzt mitzählt, ist die Logik einfach:
+                if (current > limit) {
+                    event.setCancelled(true);
+                    sendFeedback(player, "Limit reached (Crafting)!");
+                    return; // Event hier abbrechen
+                }
+            }
+        }
+
+        // TEIL 2: Bestehende Logik für Kisten/Inventar
+        ItemStack currentItem = event.getCurrentItem();
         ItemStack cursor = event.getCursor();
 
         Material matToCheck = null;
         if (cursor != null && plugin.getLimits().containsKey(cursor.getType())) matToCheck = cursor.getType();
-        else if (current != null && plugin.getLimits().containsKey(current.getType())) matToCheck = current.getType();
+        else if (currentItem != null && plugin.getLimits().containsKey(currentItem.getType())) matToCheck = currentItem.getType();
 
         if (matToCheck == null) return;
 
@@ -115,22 +151,48 @@ public class ItemLimiterListener implements Listener {
         int currentCount = countItems(player, matToCheck);
 
         Inventory clickedInv = event.getClickedInventory();
-        boolean takingFromExternal = (clickedInv != null && clickedInv != player.getInventory());
+        boolean takingFromExternal = (clickedInv != null && clickedInv != player.getInventory() && !(clickedInv instanceof CraftingInventory));
 
-        // Nur blockieren, wenn man neue Items aus einer Kiste holt.
-        // Bewegen im Inventar ist erlaubt (wird beim Schließen geprüft).
+        // Nur blockieren, wenn man neue Items aus einer externen Kiste holt.
         if (currentCount >= limit && takingFromExternal) {
+            // Ausnahme: Wenn man Items in die Leere klickt oder droppt, nicht blockieren
             event.setCancelled(true);
             sendFeedback(player, "Limit reached!");
         }
     }
 
+    // --- DRAG (Verhindert Verteilen über Crafting Slots) ---
     @EventHandler
     public void onInventoryDrag(InventoryDragEvent event) {
-        // Dragging ist erlaubt, Überschuss wird beim Schließen entfernt.
+        if (!(event.getWhoClicked() instanceof Player player)) return;
+        if (!plugin.isWorldEnabled(player.getWorld().getName())) return;
+
+        // Prüfen ob das Drag-Event Slots im Crafting-Grid betrifft
+        boolean involvesCrafting = event.getInventory() instanceof CraftingInventory;
+        if (!involvesCrafting) return;
+
+        ItemStack dragged = event.getOldCursor();
+        if (dragged == null || !plugin.getLimits().containsKey(dragged.getType())) return;
+
+        // Wenn einer der betroffenen Slots im Crafting-Bereich ist
+        for (int slot : event.getRawSlots()) {
+             // In einer CraftingInventory View (z.B. Workbench) sind Slots 1-9 das Grid (ungefähr, variiert je nach Typ)
+             // Sicherer Weg: Wir zählen einfach alles.
+             
+             Material mat = dragged.getType();
+             int limit = plugin.getLimits().get(mat);
+             int current = countItems(player, mat);
+
+             // Wenn das Limit durch das Item am Cursor (das gerade verteilt wird) bereits erreicht/überschritten ist
+             if (current > limit) {
+                 event.setCancelled(true);
+                 sendFeedback(player, "Limit reached!");
+                 return;
+             }
+        }
     }
 
-    // --- CRAFTING ---
+    // --- CRAFTING (Resultat nehmen) ---
     @EventHandler
     public void onCraft(CraftItemEvent event) {
         if (!(event.getWhoClicked() instanceof Player player)) return;
@@ -141,8 +203,16 @@ public class ItemLimiterListener implements Listener {
 
         if (plugin.getLimits().containsKey(mat)) {
             int limit = plugin.getLimits().get(mat);
+            
+            // Hier müssen wir aufpassen: countItems zählt die Zutaten im Grid mit.
+            // Wenn die Zutaten dasselbe Material sind wie das Ergebnis (z.B. Block zu Ingot), 
+            // verringert sich die Anzahl erst NACH dem Craften.
+            // Bukkit CraftItemEvent ist "Pre-Craft".
+            
             int currentCount = countItems(player, mat);
             
+            // Simple logic: Wenn current + result > limit -> Block
+            // (Etwas streng bei Umcrafting, aber sicher gegen Exploits)
             if (currentCount + result.getAmount() > limit) {
                 event.setCancelled(true);
                 sendFeedback(player, "Limit reached via Crafting!");
@@ -150,57 +220,44 @@ public class ItemLimiterListener implements Listener {
         }
     }
 
-    // --- DER NEUE "BOUNCER" (ON CLOSE) ---
+    // --- DER "BOUNCER" (ON CLOSE) - Als Safety Net ---
     @EventHandler
     public void onClose(InventoryCloseEvent event) {
         if (!(event.getPlayer() instanceof Player player)) return;
         if (!plugin.isWorldEnabled(player.getWorld().getName())) return;
 
-        // Wir prüfen JEDES limitierte Material
         for (Material mat : plugin.getLimits().keySet()) {
             int limit = plugin.getLimits().get(mat);
             
-            // 1. Alles zählen (Inv + Cursor)
-            int totalCount = 0;
+            // 1. Zählen (Benutzt jetzt die neue Methode, die auch Crafting Items im "Return Queue" erkennt)
+            int totalCount = countItems(player, mat);
             
-            // Inventar scannen
-            for (ItemStack item : player.getInventory().getContents()) {
-                if (item != null && item.getType() == mat) {
-                    totalCount += item.getAmount();
-                }
-            }
-            
-            // Cursor scannen
-            ItemStack cursor = player.getItemOnCursor();
-            if (cursor != null && cursor.getType() == mat) {
-                totalCount += cursor.getAmount();
-            }
-
             // 2. Wenn zu viel -> Droppen
             if (totalCount > limit) {
-                int amountToRemove = totalCount - limit; // Das ist der Überschuss
+                int amountToRemove = totalCount - limit;
 
                 // Erstmal das Item droppen
                 ItemStack dropStack = new ItemStack(mat, amountToRemove);
                 player.getWorld().dropItem(player.getLocation(), dropStack);
                 
-                // JETZT VOM SPIELER LÖSCHEN (Cursor Priorität!)
+                // LÖSCHEN
                 
-                // Schritt A: Vom Cursor abziehen
+                // A: Cursor
+                ItemStack cursor = player.getItemOnCursor();
                 if (cursor != null && cursor.getType() == mat) {
                     if (cursor.getAmount() <= amountToRemove) {
-                        // Der ganze Cursor ist Überschuss -> weg damit
                         amountToRemove -= cursor.getAmount();
                         player.setItemOnCursor(null); 
                     } else {
-                        // Cursor ist größer als Überschuss -> verkleinern
                         cursor.setAmount(cursor.getAmount() - amountToRemove);
-                        amountToRemove = 0; // Alles erledigt
+                        amountToRemove = 0;
                     }
                 }
 
-                // Schritt B: Wenn noch was übrig ist -> Aus dem Inventar abziehen
+                // B: Inventar
                 if (amountToRemove > 0) {
+                    // remove ist sicher, da Crafting-Items beim Close automatisch ins Inv zurückfallen
+                    // oder gedroppt werden von Bukkit, bevor dieses Event fertig ist.
                     player.getInventory().removeItem(new ItemStack(mat, amountToRemove));
                 }
 
